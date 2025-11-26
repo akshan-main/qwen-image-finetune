@@ -1,0 +1,120 @@
+model:
+  # You can also point this to your local path later if you want:
+  # pretrained_model_name_or_path: /gscratch/krishna/akshan3/models/Qwen-Image-Edit
+  pretrained_model_name_or_path: Qwen/Qwen-Image-Edit-2509
+  quantize: false
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: gaussian
+    target_modules: [to_k, to_q, to_v, to_out.0]
+    pretrained_weight: null
+    adapter_name: lora_edit
+
+data:
+  class_path: qflux.data.dataset.ImageDataset
+  init_args:
+    dataset_path:
+      - repo_id: akshan-main/restoredit-qwen-image-edit
+        split: train
+    caption_dropout_rate: 0.0
+    prompt_image_dropout_rate: 0.0
+
+    # For restore task we do NOT use edit masks
+    use_edit_mask: false
+
+    # You have exactly one control image per sample -> index 0
+    selected_control_indexes: [0]
+
+    processor:
+      class_path: qflux.data.preprocess.ImageProcessor
+      init_args:
+        process_type: center_crop
+        resize_mode: bilinear
+
+        # 512 × 512 to keep memory sane
+        target_size: [512, 512]
+        controls_size: [[512, 512]]
+
+  # Start conservative; if it fits comfortably you can bump to 2
+  batch_size: 1
+  num_workers: 4
+  shuffle: true
+
+logging:
+  output_dir: /mmfs1/gscratch/krishna/akshan3-ql/qwen_runs/restoredit_qwen_fp16
+  report_to: tensorboard
+  tracker_project_name: restoredit_qwen_fp16
+  tags:
+    - restoredit
+    - QwenImageEdit
+    - LoRA
+  notes: "Restore images LoRA fine-tune on akshan-main/restoredit-qwen-image-edit"
+
+validation:
+  enabled: true
+  steps: 500         # run validation every 500 training steps
+  max_samples: 2
+  seed: 42
+  samples:
+    - prompt: "restore this image"
+      images:
+        # put one example degraded image from your dataset here if you want visual sanity checks
+        - /gscratch/krishna/akshan3/resto_pipeline/example_input_1.png
+      controls_size: [[512, 512]]
+      height: 512
+      width: 512
+
+optimizer:
+  # Prodigy is what the example used; you can swap later if you want
+  class_path: prodigyopt.Prodigy
+  init_args:
+    lr: 1.0
+    use_bias_correction: true
+    safeguard_warmup: true
+    weight_decay: 0.01
+
+lr_scheduler:
+  scheduler_type: cosine
+  warmup_steps: 50
+  num_cycles: 0.5
+  power: 1.0
+
+loss:
+  # This was for segmentation. For restoration, just use the default latent loss.
+  mask_loss: false
+  forground_weight: 1.0
+  background_weight: 1.0
+
+train:
+  gradient_accumulation_steps: 1
+  max_train_steps: 10000
+  checkpointing_steps: 100
+  max_grad_norm: 1.0
+  mixed_precision: bf16
+  gradient_checkpointing: true
+
+  # low_memory mode uses fit_device + cache to place modules
+  low_memory: true
+  fit_device:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+trainer: QwenImageEditPlus
+resume: null
+
+cache:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+  cache_dir: ${logging.output_dir}/${logging.tracker_project_name}/cache
+  use_cache: true
+  prompt_empty_drop_keys:
+    - prompt_embeds
+    - pooled_prompt_embeds
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
